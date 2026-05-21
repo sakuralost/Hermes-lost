@@ -132,6 +132,13 @@ Run a broader agent smoke test before deploying this fork to the live host.
   context that port refused connections. The config was backed up to
   `/home/lost/.hermes/.env.codex-backup-20260521-proxy` and changed to
   `proxy:7897`; a live `hermes -z '只回复：pong'` returned `pong`.
-- Deployment status: tested in fork; live deployment pending.
+- Deployment status: live deployed to `/home/lost/.hermes/hermes-agent` as an
+  uncommitted patch on top of upstream `0c6eb96c8`. Live validation passed:
+  `hermes -z '只回复：pong'` returned `pong`; a commitment-guard probe refused
+  to claim background work without evidence; a web-search research probe called
+  `web_search`; a temporary cron smoke job ran successfully and saved output to
+  `/home/lost/.hermes/cron/output/70d240838818/2026-05-21_12-26-17.md`.
+- Runtime status: gateway is running manually in the live container as PID
+  `355106`; Weixin is connected and the cron ticker is active.
 - Upstream PR suitability: maybe. The Responses fallback is generally useful;
   the local proxy diagnosis is host-specific.
