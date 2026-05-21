@@ -178,5 +178,8 @@ Run a broader agent smoke test before deploying this fork to the live host.
   `/home/lost/.hermes/hermes-agent/venv/bin/ruff check gateway/status.py tests/gateway/test_status.py gateway/run.py tests/gateway/test_turn_evidence_log.py`
   passed. `/home/lost/.hermes/hermes-agent/venv/bin/python -m pytest tests/gateway/test_status.py tests/gateway/test_turn_evidence_log.py tests/agent/test_turn_evidence.py`
   passed with `58 passed`.
-- Deployment status: not deployed.
+- Deployment status: live deployed to `/home/lost/.hermes/hermes-agent` on
+  2026-05-21. The gateway was restarted with `--replace` and is running as
+  PID `373944`; the active Weixin token lock is now stored under
+  `/home/lost/.hermes/gateway-locks/`.
 - Upstream PR suitability: yes; this closes a duplicate-consumer failure mode.
