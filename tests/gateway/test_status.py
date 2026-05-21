@@ -435,30 +435,26 @@ class TestScopedLocks:
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(json.dumps({
-            "pid": 99999,
-            "start_time": 123,
-            "kind": "hermes-gateway",
-        }))
+        holder = open(lock_path, "a+", encoding="utf-8")
+        try:
+            assert status._try_acquire_file_lock(holder) is True
+            holder.write(json.dumps({
+                "pid": 99999,
+                "start_time": 123,
+                "kind": "hermes-gateway",
+            }))
+            holder.flush()
 
-        # Post-#21561 the liveness probe routes through
-        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows).
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+            acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
-
-        assert acquired is False
-        assert existing["pid"] == 99999
+            assert acquired is False
+            assert existing["pid"] == 99999
+        finally:
+            status._release_file_lock(holder)
+            holder.close()
 
     def test_acquire_scoped_lock_replaces_pid_reused_by_unrelated_process(self, tmp_path, monkeypatch):
-        """macOS regression: PID reused by an unrelated process with start_time=None.
-
-        On macOS /proc is unavailable, so both the lock record and the live
-        process report start_time=None.  The live PID is alive (os.kill
-        succeeds) but belongs to a completely different program.  The lock
-        must be treated as stale.
-        """
+        """Unlocked records are stale even if their PID metadata is confusing."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,74 +465,62 @@ class TestScopedLocks:
             "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
         }))
 
-        # Post-#21561 the liveness probe routes through
-        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows),
-        # not ``os.kill``.
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
-        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
-        # On macOS ``ps`` is available, so _read_process_cmdline returns the
-        # unrelated process's name.  This confirms the PID was reused.
-        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
-
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
-
-        assert acquired is True
-        payload = json.loads(lock_path.read_text())
-        assert payload["pid"] == os.getpid()
-        assert payload["metadata"]["platform"] == "telegram"
+        acquired, _ = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        try:
+            assert acquired is True
+            payload = json.loads(lock_path.read_text())
+            assert payload["pid"] == os.getpid()
+            assert payload["metadata"]["platform"] == "telegram"
+        finally:
+            status.release_scoped_lock("telegram-bot-token", "secret")
 
     def test_acquire_scoped_lock_keeps_lock_when_cmdline_unreadable_but_record_is_gateway(self, tmp_path, monkeypatch):
-        """Windows regression: ps unavailable so cmdline cannot be read.
-
-        When start_time is None on both sides and _looks_like_gateway_process
-        returns False because ps is missing (not because the PID belongs to an
-        unrelated process), the stale check must not delete a valid gateway
-        lock.  Fall back to the lock record's own argv — written by the
-        gateway at startup — before declaring the lock stale.
-        """
+        """A held file lock is authoritative even when PID metadata is unreadable."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(json.dumps({
-            "pid": 99999,
-            "start_time": None,
-            "kind": "hermes-gateway",
-            "argv": ["hermes_cli/main.py", "gateway", "run"],
-        }))
+        holder = open(lock_path, "a+", encoding="utf-8")
+        try:
+            assert status._try_acquire_file_lock(holder) is True
+            holder.write(json.dumps({
+                "pid": 99999,
+                "start_time": None,
+                "kind": "hermes-gateway",
+                "argv": ["hermes_cli/main.py", "gateway", "run"],
+            }))
+            holder.flush()
 
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
-        # Windows: ps not available, so _read_process_cmdline returns None
-        # and _looks_like_gateway_process returns False for every process.
-        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
-        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+            acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
-
-        assert acquired is False
-        assert existing["pid"] == 99999
+            assert acquired is False
+            assert existing["pid"] == 99999
+        finally:
+            status._release_file_lock(holder)
+            holder.close()
 
     def test_acquire_scoped_lock_keeps_lock_when_pid_reused_by_gateway(self, tmp_path, monkeypatch):
-        """When start_time is None but the live PID still looks like a gateway, keep the lock."""
+        """An active lock blocks another acquire even if the record resembles this gateway."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(json.dumps({
-            "pid": 99999,
-            "start_time": None,
-            "kind": "hermes-gateway",
-            "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
-        }))
+        holder = open(lock_path, "a+", encoding="utf-8")
+        try:
+            assert status._try_acquire_file_lock(holder) is True
+            holder.write(json.dumps({
+                "pid": 99999,
+                "start_time": None,
+                "kind": "hermes-gateway",
+                "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
+            }))
+            holder.flush()
 
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
-        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+            acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
-
-        assert acquired is False
-        assert existing["pid"] == 99999
+            assert acquired is False
+            assert existing["pid"] == 99999
+        finally:
+            status._release_file_lock(holder)
+            holder.close()
 
     def test_acquire_scoped_lock_replaces_stale_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
@@ -548,15 +532,14 @@ class TestScopedLocks:
             "kind": "hermes-gateway",
         }))
 
-        # Post-#21561: simulate "PID gone" via _pid_exists returning False.
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
-
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
-
-        assert acquired is True
-        payload = json.loads(lock_path.read_text())
-        assert payload["pid"] == os.getpid()
-        assert payload["metadata"]["platform"] == "telegram"
+        acquired, _ = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        try:
+            assert acquired is True
+            payload = json.loads(lock_path.read_text())
+            assert payload["pid"] == os.getpid()
+            assert payload["metadata"]["platform"] == "telegram"
+        finally:
+            status.release_scoped_lock("telegram-bot-token", "secret")
 
     def test_acquire_scoped_lock_recovers_empty_lock_file(self, tmp_path, monkeypatch):
         """Empty lock file (0 bytes) left by a crashed process should be treated as stale."""
@@ -565,12 +548,14 @@ class TestScopedLocks:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text("")  # simulate crash between O_CREAT and json.dump
 
-        acquired, existing = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
-
-        assert acquired is True
-        payload = json.loads(lock_path.read_text())
-        assert payload["pid"] == os.getpid()
-        assert payload["metadata"]["platform"] == "slack"
+        acquired, _ = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
+        try:
+            assert acquired is True
+            payload = json.loads(lock_path.read_text())
+            assert payload["pid"] == os.getpid()
+            assert payload["metadata"]["platform"] == "slack"
+        finally:
+            status.release_scoped_lock("slack-app-token", "secret")
 
     def test_acquire_scoped_lock_recovers_corrupt_lock_file(self, tmp_path, monkeypatch):
         """Lock file with invalid JSON should be treated as stale."""
@@ -579,11 +564,13 @@ class TestScopedLocks:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text("{truncated")  # simulate partial write
 
-        acquired, existing = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
-
-        assert acquired is True
-        payload = json.loads(lock_path.read_text())
-        assert payload["pid"] == os.getpid()
+        acquired, _ = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
+        try:
+            assert acquired is True
+            payload = json.loads(lock_path.read_text())
+            assert payload["pid"] == os.getpid()
+        finally:
+            status.release_scoped_lock("slack-app-token", "secret")
 
     def test_release_scoped_lock_only_removes_current_owner(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))

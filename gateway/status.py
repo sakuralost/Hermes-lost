@@ -35,6 +35,7 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+_scoped_lock_handles: dict[Path, Any] = {}
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
@@ -575,13 +576,23 @@ def remove_pid_file() -> None:
 
 
 def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
-    """Acquire a machine-local lock keyed by scope + identity.
+    """Acquire a cross-process lock keyed by scope + identity.
 
     Used to prevent multiple local gateways from using the same external identity
     at once (e.g. the same Telegram bot token across different HERMES_HOME dirs).
     """
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if lock_path in _scoped_lock_handles:
+        existing = _read_json_file(lock_path)
+        return True, existing
+
+    handle = open(lock_path, "a+", encoding="utf-8")
+    if not _try_acquire_file_lock(handle):
+        existing = _read_json_file(lock_path)
+        handle.close()
+        return False, existing
+
     record = {
         **_build_pid_record(),
         "scope": scope,
@@ -589,97 +600,43 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         "metadata": metadata or {},
         "updated_at": _utc_now_iso(),
     }
-
-    existing = _read_json_file(lock_path)
-    if existing is None and lock_path.exists():
-        # Lock file exists but is empty or contains invalid JSON — treat as
-        # stale.  This happens when a previous process was killed between
-        # O_CREAT|O_EXCL and the subsequent json.dump() (e.g. DNS failure
-        # during rapid Slack reconnect retries).
+    try:
+        handle.seek(0)
+        handle.truncate()
+        json.dump(record, handle)
+        handle.flush()
         try:
-            lock_path.unlink(missing_ok=True)
+            os.fsync(handle.fileno())
         except OSError:
             pass
-    if existing:
-        try:
-            existing_pid = int(existing["pid"])
-        except (KeyError, TypeError, ValueError):
-            existing_pid = None
-
-        if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
-            _write_json_file(lock_path, record)
-            return True, existing
-
-        stale = existing_pid is None
-        if not stale:
-            if not _pid_exists(existing_pid):
-                stale = True
-            else:
-                current_start = _get_process_start_time(existing_pid)
-                if (
-                    existing.get("start_time") is not None
-                    and current_start is not None
-                    and current_start != existing.get("start_time")
-                ):
-                    stale = True
-                # When start_time comparison is unavailable (macOS / Windows
-                # have no /proc, so both sides are None), fall back to
-                # checking the live process command line.  When cmdline is
-                # also unreadable (Windows has no ps), consult the lock
-                # record's own argv — the gateway writes it at startup and
-                # it's the only identity signal on platforms without ps.
-                # Both oracles must indicate "not a gateway" to mark stale.
-                if (
-                    not stale
-                    and existing.get("start_time") is None
-                    and current_start is None
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
-                    live_cmdline = _read_process_cmdline(existing_pid)
-                    if live_cmdline is not None or not _record_looks_like_gateway(existing):
-                        stale = True
-                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still appear alive to _pid_exists but are not
-                # actually running. Treat them as stale so --replace works.
-                if not stale:
-                    try:
-                        _proc_status = Path(f"/proc/{existing_pid}/status")
-                        if _proc_status.exists():
-                            for _line in _proc_status.read_text(encoding="utf-8").splitlines():
-                                if _line.startswith("State:"):
-                                    _state = _line.split()[1]
-                                    if _state in {"T", "t"}:  # stopped or tracing stop
-                                        stale = True
-                                    break
-                    except (OSError, PermissionError):
-                        pass
-        if stale:
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        else:
-            return False, existing
-
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False, _read_json_file(lock_path)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(record, handle)
     except Exception:
+        _release_file_lock(handle)
+        handle.close()
         try:
             lock_path.unlink(missing_ok=True)
         except OSError:
             pass
         raise
+    _scoped_lock_handles[lock_path] = handle
     return True, None
 
 
 def release_scoped_lock(scope: str, identity: str) -> None:
     """Release a previously-acquired scope lock when owned by this process."""
     lock_path = _get_scope_lock_path(scope, identity)
+    handle = _scoped_lock_handles.pop(lock_path, None)
+    if handle is not None:
+        _release_file_lock(handle)
+        try:
+            handle.close()
+        except OSError:
+            pass
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+
     existing = _read_json_file(lock_path)
     if not existing:
         return

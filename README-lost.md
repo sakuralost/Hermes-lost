@@ -183,3 +183,24 @@ Run a broader agent smoke test before deploying this fork to the live host.
   PID `373944`; the active Weixin token lock is now stored under
   `/home/lost/.hermes/gateway-locks/`.
 - Upstream PR suitability: yes; this closes a duplicate-consumer failure mode.
+
+### 2026-05-21 - Scoped Token File Locks
+
+- Base: branch `lost/test/turn-evidence-audit` commit `211a861cc`.
+- Branch: `lost/test/turn-evidence-audit`.
+- Scope: make scoped token locks hold an OS file lock for the lifetime of the
+  gateway process instead of trusting PID metadata in JSON. This is required
+  when two gateways share `HERMES_HOME` but run in different PID namespaces.
+- Files: `gateway/status.py`, `tests/gateway/test_status.py`,
+  `README-lost.md`.
+- Validation:
+  `/home/lost/.hermes/hermes-agent/venv/bin/ruff check gateway/status.py tests/gateway/test_status.py`
+  passed. `/home/lost/.hermes/hermes-agent/venv/bin/python -m pytest tests/gateway/test_status.py`
+  passed with `51 passed`.
+- Deployment status: live deployed to `/home/lost/.hermes/hermes-agent` on
+  2026-05-21. The old Weixin gateway was restarted and now holds the shared
+  scoped lock; a separate process attempting to lock
+  `/home/lost/.hermes/gateway-locks/weixin-bot-token-af53ead7826ea0c4.lock`
+  observed that it was already locked.
+- Upstream PR suitability: yes; this is a correctness fix for duplicate
+  gateway consumers.
