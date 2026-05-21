@@ -144,3 +144,22 @@ Run a broader agent smoke test before deploying this fork to the live host.
   `355106`; Weixin is connected and the cron ticker is active.
 - Upstream PR suitability: maybe. The Responses fallback is generally useful;
   the local proxy diagnosis is host-specific.
+
+### 2026-05-21 - Gateway Evidence Propagation Fix
+
+- Base: branch `lost/test/turn-evidence-audit` commit `c6e00b57e`.
+- Branch: `lost/test/turn-evidence-audit`.
+- Scope: preserve `turn_evidence` from the local agent result when the gateway
+  builds the response payload, so Weixin/gateway logs report actual tool calls
+  instead of `tools=0` after successful multi-tool turns.
+- Files: `gateway/run.py`, `tests/gateway/test_turn_evidence_log.py`,
+  `README-lost.md`.
+- Validation:
+  `/home/lost/.hermes/hermes-agent/venv/bin/ruff check gateway/run.py tests/gateway/test_turn_evidence_log.py`
+  passed. `/home/lost/.hermes/hermes-agent/venv/bin/python -m pytest tests/gateway/test_turn_evidence_log.py tests/agent/test_turn_evidence.py`
+  passed with `7 passed`.
+- Deployment status: live deployed to `/home/lost/.hermes/hermes-agent` on
+  2026-05-21. The gateway was restarted with `--replace` and is running as
+  PID `368713`; `find_gateway_pids(all_profiles=True)` reported only
+  `[368713]`.
+- Upstream PR suitability: yes; this is a narrow observability correctness fix.

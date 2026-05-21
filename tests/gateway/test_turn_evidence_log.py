@@ -1,6 +1,19 @@
 from gateway.run import _format_turn_evidence_for_gateway_log
 
 
+def test_local_agent_result_preserves_turn_evidence_for_gateway_log():
+    import inspect
+
+    from gateway.run import GatewayRunner
+
+    source = inspect.getsource(GatewayRunner._run_agent)
+
+    assert (
+        '"turn_evidence": result_holder[0].get("turn_evidence") '
+        'if result_holder[0] else None'
+    ) in source
+
+
 def test_gateway_formats_turn_evidence_for_response_log():
     text = _format_turn_evidence_for_gateway_log(
         {

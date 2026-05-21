@@ -16798,6 +16798,7 @@ class GatewayRunner:
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
+                    "turn_evidence": result.get("turn_evidence"),
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
@@ -16958,6 +16959,7 @@ class GatewayRunner:
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
+                "turn_evidence": result_holder[0].get("turn_evidence") if result_holder[0] else None,
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "last_prompt_tokens": _last_prompt_toks,
@@ -17283,6 +17285,7 @@ class GatewayRunner:
                     "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                     "api_calls": _iter_n,
                     "tools": tools_holder[0] or [],
+                    "turn_evidence": result_holder[0].get("turn_evidence") if result_holder[0] else None,
                     "history_offset": 0,
                     "failed": True,
                 }
