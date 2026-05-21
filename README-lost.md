@@ -90,7 +90,8 @@ Run a broader agent smoke test before deploying this fork to the live host.
 - Validation:
   `python -m pytest tests/agent/test_commitment_guard.py tests/agent/test_tool_guardrails.py`
   passed with `18 passed`.
-- Deployment status: not deployed to the live Hermes instance.
+- Deployment status: live deployed as part of the
+  `lost/test/turn-evidence-audit` patch on 2026-05-21.
 - Upstream PR suitability: maybe, after live testing and narrower review.
 
 ### 2026-05-21 - Turn Evidence Audit
@@ -105,7 +106,8 @@ Run a broader agent smoke test before deploying this fork to the live host.
 - Validation:
   `python -m pytest tests/agent/test_turn_evidence.py tests/gateway/test_turn_evidence_log.py tests/agent/test_commitment_guard.py tests/agent/test_tool_guardrails.py`
   passed with `24 passed`.
-- Deployment status: not deployed to the live Hermes instance.
+- Deployment status: live deployed as part of the
+  `lost/test/turn-evidence-audit` patch on 2026-05-21.
 - Upstream PR suitability: maybe, after live testing and review for log format.
 
 ### 2026-05-21 - xAI Responses Transport Recovery
