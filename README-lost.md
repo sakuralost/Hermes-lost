@@ -92,3 +92,18 @@ Run a broader agent smoke test before deploying this fork to the live host.
   passed with `18 passed`.
 - Deployment status: not deployed to the live Hermes instance.
 - Upstream PR suitability: maybe, after live testing and narrower review.
+
+### 2026-05-21 - Turn Evidence Audit
+
+- Base: `origin/main` commit `870ff6b1b`.
+- Branch: `lost/test/turn-evidence-audit`.
+- Scope: add structured per-turn evidence so logs can show whether a turn
+  actually called tools or was blocked by the commitment guard.
+- Files: `agent/turn_evidence.py`, `agent/conversation_loop.py`,
+  `gateway/run.py`, `tests/agent/test_turn_evidence.py`,
+  `tests/gateway/test_turn_evidence_log.py`.
+- Validation:
+  `python -m pytest tests/agent/test_turn_evidence.py tests/gateway/test_turn_evidence_log.py tests/agent/test_commitment_guard.py tests/agent/test_tool_guardrails.py`
+  passed with `24 passed`.
+- Deployment status: not deployed to the live Hermes instance.
+- Upstream PR suitability: maybe, after live testing and review for log format.

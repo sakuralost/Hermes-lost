@@ -4055,11 +4055,30 @@ def run_conversation(
             last_reasoning = msg["reasoning"]
             break
 
+    try:
+        from agent.turn_evidence import collect_turn_evidence
+
+        turn_evidence = collect_turn_evidence(
+            messages,
+            current_turn_user_idx=current_turn_user_idx,
+            commitment_guard=getattr(agent, "_commitment_guard_decision", None),
+        )
+    except Exception as _evidence_err:
+        logger.debug("turn evidence collection failed: %s", _evidence_err)
+        turn_evidence = {
+            "tool_call_count": 0,
+            "tool_result_count": 0,
+            "tool_names": [],
+            "tool_result_names": [],
+            "has_tool_evidence": False,
+        }
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
         "messages": messages,
+        "turn_evidence": turn_evidence,
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,

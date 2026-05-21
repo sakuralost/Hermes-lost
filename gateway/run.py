@@ -1365,6 +1365,17 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _format_turn_evidence_for_gateway_log(agent_result: dict) -> str:
+    """Compact execution-evidence summary for gateway response logs."""
+
+    try:
+        from agent.turn_evidence import format_turn_evidence_for_log
+
+        return format_turn_evidence_for_log(agent_result.get("turn_evidence"))
+    except Exception:
+        return "tools=? results=?"
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -8476,10 +8487,11 @@ class GatewayRunner:
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
+            _turn_evidence_log = _format_turn_evidence_for_gateway_log(agent_result)
             logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars evidence=%s",
                 _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
+                _response_time, _api_calls, _resp_len, _turn_evidence_log,
             )
 
             # Successful turn — clear any stuck-loop counter for this session.
