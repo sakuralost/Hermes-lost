@@ -361,7 +361,13 @@ def cronjob(
 
         if normalized == "create":
             if not schedule:
-                return tool_error("schedule is required for create", success=False)
+                return tool_error(
+                    "schedule is required for action='create'. Retry the cronjob tool "
+                    "with a schedule string such as '30m', 'every 2h', '0 9 * * *', "
+                    "or an ISO timestamp. If the user did not provide timing, ask a "
+                    "clarifying question instead of calling create again.",
+                    success=False,
+                )
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
             # Job-shape validation differs by mode:
@@ -599,6 +605,8 @@ CRONJOB_SCHEMA = {
     "description": """Manage scheduled cron jobs with a single compressed tool.
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
+For action='create', schedule is mandatory. Never call create without schedule;
+if the user did not provide timing, ask for clarification first.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
@@ -630,7 +638,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "schedule": {
                 "type": "string",
-                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp"
+                "description": "Mandatory for action='create'. Optional for action='update'. Use '30m', 'every 2h', '0 9 * * *', or ISO timestamp."
             },
             "name": {
                 "type": "string",

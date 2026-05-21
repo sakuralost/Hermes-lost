@@ -29,7 +29,9 @@ Three distinct failure modes the user community hit during rollout:
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+from openai import APIConnectionError
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +55,29 @@ def _make_codex_agent():
     agent.provider = "xai-oauth"
     agent._interrupt_requested = False
     return agent
+
+
+def _minimal_responses_kwargs():
+    return {
+        "model": "grok-4.3",
+        "instructions": "test",
+        "input": [{"role": "user", "content": "ping"}],
+        "store": False,
+    }
+
+
+def _api_connection_error():
+    return APIConnectionError(
+        message="Connection error.",
+        request=httpx.Request("POST", "https://api.x.ai/v1/responses"),
+    )
+
+
+def _connect_refused_error():
+    return httpx.ConnectError(
+        "[Errno 111] Connection refused",
+        request=httpx.Request("POST", "https://api.x.ai/v1/responses"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -155,6 +180,92 @@ def test_codex_stream_postlude_error_still_falls_back():
 
     assert result is fallback_response
     mock_fallback.assert_called_once()
+
+
+def test_codex_stream_openai_connection_error_falls_back_to_create_stream():
+    """OpenAI-wrapped transport failures must use the Responses fallback."""
+    agent = _make_codex_agent()
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.side_effect = _api_connection_error()
+
+    fallback_response = SimpleNamespace(output=[], status="completed")
+    with patch.object(
+        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
+    ) as mock_fallback:
+        result = agent._run_codex_stream(_minimal_responses_kwargs(), client=mock_client)
+
+    assert result is fallback_response
+    assert mock_client.responses.stream.call_count == 2
+    mock_fallback.assert_called_once_with(
+        _minimal_responses_kwargs(),
+        client=mock_client,
+    )
+
+
+def test_codex_create_stream_connection_error_falls_back_to_non_stream_create():
+    """If create(stream=True) also breaks, use plain responses.create."""
+    agent = _make_codex_agent()
+
+    non_stream_response = SimpleNamespace(output=[], status="completed")
+    mock_client = MagicMock()
+    mock_client.responses.create.side_effect = [
+        _api_connection_error(),
+        non_stream_response,
+    ]
+
+    result = agent._run_codex_create_stream_fallback(
+        _minimal_responses_kwargs(),
+        client=mock_client,
+    )
+
+    assert result is non_stream_response
+    assert mock_client.responses.create.call_count == 2
+    first_kwargs = mock_client.responses.create.call_args_list[0].kwargs
+    second_kwargs = mock_client.responses.create.call_args_list[1].kwargs
+    assert first_kwargs["stream"] is True
+    assert "stream" not in second_kwargs
+
+
+def test_codex_non_stream_refused_proxy_retries_direct_without_env_proxy(monkeypatch):
+    """A dead env proxy should not be the final Responses fallback failure."""
+    import run_agent
+
+    agent = _make_codex_agent()
+    agent._client_kwargs = {
+        "api_key": "test-key",
+        "base_url": "https://api.x.ai/v1",
+    }
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+
+    non_stream_response = SimpleNamespace(output=[], status="completed")
+    broken_proxy_client = MagicMock()
+    broken_proxy_client.responses.create.side_effect = _connect_refused_error()
+
+    direct_client = MagicMock()
+    direct_client.responses.create.return_value = non_stream_response
+
+    openai_factory = MagicMock(return_value=direct_client)
+    monkeypatch.setattr(run_agent, "OpenAI", openai_factory)
+
+    result = agent._run_codex_create_non_stream_fallback(
+        _minimal_responses_kwargs(),
+        client=broken_proxy_client,
+    )
+
+    assert result is non_stream_response
+    openai_factory.assert_called_once()
+    direct_kwargs = openai_factory.call_args.kwargs
+    assert direct_kwargs["api_key"] == "test-key"
+    assert direct_kwargs["base_url"] == "https://api.x.ai/v1"
+    assert direct_kwargs["http_client"].trust_env is False
+    direct_client.responses.create.assert_called_once()
+    direct_client.close.assert_called_once()
+    direct_kwargs["http_client"].close()
 
 
 # ---------------------------------------------------------------------------

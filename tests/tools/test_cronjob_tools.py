@@ -177,6 +177,13 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_without_schedule_returns_recovery_hint(self):
+        result = json.loads(cronjob(action="create", prompt="Check server status"))
+
+        assert result["success"] is False
+        assert "schedule is required for action='create'" in result["error"]
+        assert "ask a clarifying question" in result["error"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

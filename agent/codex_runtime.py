@@ -25,6 +25,111 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _is_responses_transport_error(exc: BaseException) -> bool:
+    """Return True for retryable Responses transport failures.
+
+    openai-python wraps httpx connection/timeout errors as
+    ``APIConnectionError`` / ``APITimeoutError``.  The Codex Responses stream
+    path used to catch only raw httpx exceptions, so the wrapped xAI OAuth
+    failure surfaced as a generic "Connection error" after the outer retry
+    budget was exhausted even when a non-stream Responses request would
+    succeed.
+    """
+    import httpx as _httpx
+
+    if isinstance(
+        exc,
+        (
+            _httpx.RemoteProtocolError,
+            _httpx.ReadTimeout,
+            _httpx.ConnectError,
+            _httpx.ConnectTimeout,
+            _httpx.PoolTimeout,
+            ConnectionError,
+        ),
+    ):
+        return True
+
+    try:
+        from openai import APIConnectionError, APITimeoutError
+    except Exception:
+        return False
+    return isinstance(exc, (APIConnectionError, APITimeoutError))
+
+
+def _transport_error_looks_like_proxy_refused(exc: BaseException) -> bool:
+    """Return True when a transport error likely came from a dead local proxy."""
+    seen: set[int] = set()
+    pending = [exc]
+    needles = (
+        "connection refused",
+        "errno 111",
+        "econnrefused",
+    )
+    while pending:
+        current = pending.pop()
+        if current is None:
+            continue
+        ident = id(current)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        text = f"{current} {current!r}".lower()
+        if any(needle in text for needle in needles):
+            return True
+        pending.extend([
+            getattr(current, "__cause__", None),
+            getattr(current, "__context__", None),
+        ])
+    return False
+
+
+def _responses_proxy_configured(agent) -> bool:
+    """Return True when this Responses client is currently using an env proxy."""
+    try:
+        from agent.process_bootstrap import _get_proxy_for_base_url
+        return bool(_get_proxy_for_base_url(getattr(agent, "base_url", None)))
+    except Exception:
+        return False
+
+
+def _build_direct_responses_client(agent):
+    """Build an OpenAI client that ignores env proxy settings for one retry."""
+    import socket
+
+    import httpx
+    import run_agent
+
+    client_kwargs = dict(getattr(agent, "_client_kwargs", {}) or {})
+    if getattr(agent, "api_key", None):
+        client_kwargs["api_key"] = agent.api_key
+    if getattr(agent, "base_url", None):
+        client_kwargs["base_url"] = agent.base_url
+
+    sock_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30))
+        sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
+        sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
+    elif hasattr(socket, "TCP_KEEPALIVE"):
+        sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30))
+
+    client_kwargs["http_client"] = httpx.Client(
+        transport=httpx.HTTPTransport(socket_options=sock_opts),
+        trust_env=False,
+    )
+    return run_agent.OpenAI(**client_kwargs)
+
+
+def _close_direct_responses_client(client) -> None:
+    close_fn = getattr(client, "close", None)
+    if callable(close_fn):
+        try:
+            close_fn()
+        except Exception:
+            pass
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -177,8 +282,6 @@ def run_codex_app_server_turn(
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
     """Execute one streaming Responses API request and return the final response."""
-    import httpx as _httpx
-
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
     has_tool_calls = False
@@ -265,22 +368,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
-        except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
-            if attempt < max_stream_retries:
-                logger.debug(
-                    "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
-                    attempt + 1,
-                    max_stream_retries + 1,
-                    agent._client_log_context(),
-                    exc,
-                )
-                continue
-            logger.debug(
-                "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
-                agent._client_log_context(),
-                exc,
-            )
-            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
@@ -329,6 +416,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except Exception as exc:
+            if not _is_responses_transport_error(exc):
+                raise
+            if attempt < max_stream_retries:
+                logger.debug(
+                    "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                    exc,
+                )
+                continue
+            logger.debug(
+                "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
+                agent._client_log_context(),
+                exc,
+            )
+            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
 
 
 
@@ -338,7 +443,21 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     fallback_kwargs = dict(api_kwargs)
     fallback_kwargs["stream"] = True
     fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
-    stream_or_response = active_client.responses.create(**fallback_kwargs)
+    try:
+        stream_or_response = active_client.responses.create(**fallback_kwargs)
+    except Exception as exc:
+        if not _is_responses_transport_error(exc):
+            raise
+        logger.debug(
+            "Codex Responses create(stream=True) transport failed; "
+            "falling back to non-stream create. %s error=%s",
+            agent._client_log_context(),
+            exc,
+        )
+        return agent._run_codex_create_non_stream_fallback(
+            api_kwargs,
+            client=active_client,
+        )
 
     # Compatibility shim for mocks or providers that still return a concrete response.
     if hasattr(stream_or_response, "output"):
@@ -440,9 +559,47 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
 
+def run_codex_create_non_stream_fallback(agent, api_kwargs: dict, client: Any = None):
+    """Last-resort non-stream Responses fallback for streaming transport bugs."""
+    active_client = client or agent._ensure_primary_openai_client(reason="codex_create_non_stream_fallback")
+    fallback_kwargs = dict(api_kwargs)
+    fallback_kwargs.pop("stream", None)
+    fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=False)
+    try:
+        return active_client.responses.create(**fallback_kwargs)
+    except Exception as exc:
+        if (
+            not _is_responses_transport_error(exc)
+            or not _responses_proxy_configured(agent)
+            or not _transport_error_looks_like_proxy_refused(exc)
+        ):
+            raise
+
+        logger.warning(
+            "Codex Responses non-stream create hit a refused env proxy; "
+            "retrying once with a direct no-proxy client. %s error=%s",
+            agent._client_log_context(),
+            exc,
+        )
+        direct_client = _build_direct_responses_client(agent)
+        try:
+            return direct_client.responses.create(**fallback_kwargs)
+        except Exception as direct_exc:
+            logger.debug(
+                "Codex Responses direct no-proxy retry failed after refused proxy. %s error=%s",
+                agent._client_log_context(),
+                direct_exc,
+                exc_info=True,
+            )
+            raise exc from direct_exc
+        finally:
+            _close_direct_responses_client(direct_client)
+
+
 
 __all__ = [
     "run_codex_app_server_turn",
     "run_codex_stream",
     "run_codex_create_stream_fallback",
+    "run_codex_create_non_stream_fallback",
 ]

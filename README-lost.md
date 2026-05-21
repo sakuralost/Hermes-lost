@@ -107,3 +107,31 @@ Run a broader agent smoke test before deploying this fork to the live host.
   passed with `24 passed`.
 - Deployment status: not deployed to the live Hermes instance.
 - Upstream PR suitability: maybe, after live testing and review for log format.
+
+### 2026-05-21 - xAI Responses Transport Recovery
+
+- Base: branch `lost/test/turn-evidence-audit` commit `6648fcf9e`.
+- Branch: `lost/test/turn-evidence-audit`.
+- Scope: recover from xAI/OpenAI Responses transport failures that were
+  surfacing as generic `Connection error`, and make cron create failures more
+  actionable when `schedule` is omitted.
+- Files: `agent/codex_runtime.py`, `run_agent.py`, `tools/cronjob_tools.py`,
+  `tests/run_agent/test_codex_xai_oauth_recovery.py`,
+  `tests/tools/test_cronjob_tools.py`.
+- Validation:
+  `/home/lost/.hermes/hermes-agent/venv/bin/ruff check agent/codex_runtime.py run_agent.py tools/cronjob_tools.py tests/run_agent/test_codex_xai_oauth_recovery.py tests/tools/test_cronjob_tools.py`
+  passed.
+- Validation:
+  `/home/lost/.hermes/hermes-agent/venv/bin/pytest tests/tools/test_cronjob_tools.py tests/run_agent/test_codex_xai_oauth_recovery.py`
+  passed with `80 passed`.
+- Validation:
+  `/home/lost/.hermes/hermes-agent/venv/bin/pytest tests/agent/test_commitment_guard.py tests/agent/test_turn_evidence.py tests/gateway/test_turn_evidence_log.py tests/run_agent/test_streaming.py -k 'codex or commitment or evidence'`
+  passed with `19 passed`.
+- Live diagnosis: `/home/lost/.hermes/.env` had `HTTP_PROXY`,
+  `HTTPS_PROXY`, and `ALL_PROXY` pointing at `127.0.0.1:7897`; in this host
+  context that port refused connections. The config was backed up to
+  `/home/lost/.hermes/.env.codex-backup-20260521-proxy` and changed to
+  `proxy:7897`; a live `hermes -z '只回复：pong'` returned `pong`.
+- Deployment status: tested in fork; live deployment pending.
+- Upstream PR suitability: maybe. The Responses fallback is generally useful;
+  the local proxy diagnosis is host-specific.
