@@ -9,6 +9,13 @@ from gateway import status
 
 
 class TestGatewayPidState:
+    def test_scoped_lock_dir_defaults_to_hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+
+        assert status._get_lock_dir() == tmp_path / "hermes-home" / "gateway-locks"
+
     def test_write_pid_file_records_gateway_metadata(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

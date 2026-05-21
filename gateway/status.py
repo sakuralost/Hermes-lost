@@ -65,8 +65,7 @@ def _get_lock_dir() -> Path:
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return state_home / "hermes" / _LOCKS_DIRNAME
+    return get_hermes_home() / _LOCKS_DIRNAME
 
 
 def _utc_now_iso() -> str:

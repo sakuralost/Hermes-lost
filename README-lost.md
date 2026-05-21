@@ -163,3 +163,20 @@ Run a broader agent smoke test before deploying this fork to the live host.
   PID `368713`; `find_gateway_pids(all_profiles=True)` reported only
   `[368713]`.
 - Upstream PR suitability: yes; this is a narrow observability correctness fix.
+
+### 2026-05-21 - Shared Gateway Token Lock Directory
+
+- Base: branch `lost/test/turn-evidence-audit` commit `612728526`.
+- Branch: `lost/test/turn-evidence-audit`.
+- Scope: move token-scoped gateway locks from `$XDG_STATE_HOME` /
+  `$HOME/.local/state` into `HERMES_HOME/gateway-locks` by default, so
+  separate containers or users sharing the same Hermes home cannot also share
+  the same Weixin bot token unnoticed.
+- Files: `gateway/status.py`, `tests/gateway/test_status.py`,
+  `README-lost.md`.
+- Validation:
+  `/home/lost/.hermes/hermes-agent/venv/bin/ruff check gateway/status.py tests/gateway/test_status.py gateway/run.py tests/gateway/test_turn_evidence_log.py`
+  passed. `/home/lost/.hermes/hermes-agent/venv/bin/python -m pytest tests/gateway/test_status.py tests/gateway/test_turn_evidence_log.py tests/agent/test_turn_evidence.py`
+  passed with `58 passed`.
+- Deployment status: not deployed.
+- Upstream PR suitability: yes; this closes a duplicate-consumer failure mode.
