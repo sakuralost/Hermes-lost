@@ -18,6 +18,20 @@ Work in `/home/lost/lost/Hermes-lost`. This is a fork of
 - Keep changes small enough to deploy back to the live Hermes checkout after
   review.
 
+## Version Discipline
+
+- Treat `upstream/main` as the official Hermes reference.
+- Treat `lost/test/<topic>` branches as experimental test versions.
+- Treat `origin/main` as the user's stable Hermes-lost line.
+- Do not bump package versions, create tags, merge branches, sync from upstream,
+  deploy to live Hermes, or push to GitHub without explicit user approval for
+  that operation.
+- Before code changes, state the intended scope and wait for approval unless
+  the user already asked for that exact change in the current turn.
+- For each meaningful change, update `README-lost.md` with the upstream base,
+  local commit or branch, modified files, validation result, deployment status,
+  and upstream PR suitability.
+
 ## Useful Commands
 
 ```bash
