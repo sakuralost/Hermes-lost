@@ -1078,6 +1078,29 @@ def init_agent(
     if not isinstance(_agent_section, dict):
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+    _commitment_guard_cfg = _agent_section.get("commitment_guard", {})
+    if isinstance(_commitment_guard_cfg, bool):
+        agent._commitment_guard_enabled = _commitment_guard_cfg
+        agent._commitment_guard_max_retries = 2
+    elif isinstance(_commitment_guard_cfg, dict):
+        _raw_enabled = _commitment_guard_cfg.get("enabled", True)
+        if isinstance(_raw_enabled, str):
+            agent._commitment_guard_enabled = _raw_enabled.strip().lower() not in {
+                "0", "false", "no", "off",
+            }
+        else:
+            agent._commitment_guard_enabled = bool(_raw_enabled)
+        try:
+            agent._commitment_guard_max_retries = max(
+                0, int(_commitment_guard_cfg.get("max_retries", 2))
+            )
+        except (TypeError, ValueError):
+            agent._commitment_guard_max_retries = 2
+    else:
+        agent._commitment_guard_enabled = True
+        agent._commitment_guard_max_retries = 2
+    agent._commitment_guard_retries = 0
+    agent._commitment_guard_decision = None
 
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.

@@ -279,6 +279,8 @@ def run_conversation(
     agent._incomplete_scratchpad_retries = 0
     agent._codex_incomplete_retries = 0
     agent._thinking_prefill_retries = 0
+    agent._commitment_guard_retries = 0
+    agent._commitment_guard_decision = None
     agent._post_tool_empty_retried = False
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
@@ -3723,7 +3725,63 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
-                
+
+                try:
+                    from agent.commitment_guard import evaluate_commitment_response
+
+                    _cg_decision = evaluate_commitment_response(
+                        assistant_response=final_response,
+                        messages=messages,
+                        current_turn_user_idx=current_turn_user_idx,
+                        enabled=getattr(agent, "_commitment_guard_enabled", True),
+                        retry_count=getattr(agent, "_commitment_guard_retries", 0),
+                        max_retries=getattr(agent, "_commitment_guard_max_retries", 2),
+                        available_tool_names=getattr(agent, "valid_tool_names", None),
+                    )
+                except Exception as _cg_err:
+                    logger.debug("commitment guard evaluation failed: %s", _cg_err)
+                    _cg_decision = None
+
+                if _cg_decision is not None and _cg_decision.should_retry:
+                    agent._commitment_guard_retries = getattr(
+                        agent, "_commitment_guard_retries", 0
+                    ) + 1
+                    agent._commitment_guard_decision = _cg_decision
+                    logger.warning(
+                        "Commitment guard retry: response promised execution "
+                        "without tool evidence (session=%s retry=%d/%d)",
+                        agent.session_id or "-",
+                        agent._commitment_guard_retries,
+                        getattr(agent, "_commitment_guard_max_retries", 2),
+                    )
+                    agent._emit_status(
+                        "Commitment guard: promised execution without tool "
+                        "evidence; asking model to execute or admit it cannot."
+                    )
+                    guard_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    guard_msg["content"] = final_response
+                    guard_msg["_commitment_guard_synthetic"] = True
+                    messages.append(guard_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _cg_decision.retry_prompt,
+                        "_commitment_guard_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    agent._save_session_log(messages)
+                    continue
+
+                if _cg_decision is not None and _cg_decision.should_block:
+                    agent._commitment_guard_decision = _cg_decision
+                    logger.warning(
+                        "Commitment guard blocked final response: promised "
+                        "execution without tool evidence (session=%s)",
+                        agent.session_id or "-",
+                    )
+                    final_response = _cg_decision.fallback_response
+                    assistant_message.content = final_response
+                    _turn_exit_reason = "commitment_guard_blocked"
+
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
                 # Pop thinking-only prefill and empty-response retry
@@ -3737,13 +3795,15 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_commitment_guard_synthetic")
                     )
                 ):
                     messages.pop()
 
                 messages.append(final_msg)
                 
-                _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+                if _turn_exit_reason != "commitment_guard_blocked":
+                    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break
@@ -4024,6 +4084,8 @@ def run_conversation(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if getattr(agent, "_commitment_guard_decision", None) is not None:
+        result["commitment_guard"] = agent._commitment_guard_decision.to_metadata()
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

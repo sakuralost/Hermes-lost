@@ -539,6 +539,15 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Runtime evidence check for "I started / I'll report later" replies.
+        # If the model promises background/tool work without any tool call,
+        # job id, log path, or report artifact in the current turn, Hermes
+        # nudges it to execute tools. If it still refuses, Hermes blocks the
+        # false promise and sends a truthful failure message instead.
+        "commitment_guard": {
+            "enabled": True,
+            "max_retries": 2,
+        },
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
